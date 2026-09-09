@@ -1,0 +1,1105 @@
+================================================================================
+ADAPTIVE AI EXECUTION RUNTIME
+DATABASE DESIGN, API SPECIFICATION & SECURITY ARCHITECTURE
+================================================================================
+
+Version: Full Vision (6–7 Month Project)
+
+================================================================================
+OVERVIEW & DOCUMENT PURPOSE
+================================================================================
+
+This document defines the persistent data model, communication interfaces, API
+contracts, and security architecture of the Adaptive AI Execution Runtime.
+
+It specifies how data is stored, transmitted, validated, secured, versioned,
+and recovered while ensuring consistency across all runtime services.
+
+This document is intended as the high-level specification for the complete
+6-7 month implementation. It should evolve alongside architecture decision
+records and detailed OpenAPI/protobuf files.
+
+================================================================================
+PART 1: DATABASE DESIGN SPECIFICATION
+================================================================================
+
+== 1. DATABASE PURPOSE & GOALS ==
+
+This section defines the complete database architecture for the Adaptive AI
+Execution Runtime.
+
+Goals:
+- Durable workflow execution
+- Distributed scheduling
+- Fault tolerance
+- Replay
+- Observability
+- Benchmarking
+- Multi-provider model routing
+- Caching
+- Checkpointing
+- Event sourcing
+
+== 2. DATABASE DESIGN PRINCIPLES ==
+
+The database architecture follows these core principles:
+
+PostgreSQL as the Source of Truth
+
+All persistent workflow metadata, execution history, checkpoints, and
+configuration are stored in PostgreSQL.
+
+Stateless Workers
+
+Workers never own persistent state. They retrieve state from the database
+when required.
+
+Immutable Execution History
+
+Execution records are append-only wherever possible to preserve replayability
+and auditing.
+
+Normalized Metadata
+
+Workflow metadata remains normalized to reduce duplication while execution
+logs may be partially denormalized for analytical queries.
+
+Idempotent Writes
+
+All database operations must safely tolerate retries.
+
+== 3. STORAGE ARCHITECTURE ==
+
+PostgreSQL
+
+Source of truth. Stores metadata, workflow state, checkpoints, scheduler
+state, routing policies, users, organizations, API keys, metrics summaries.
+
+Redis
+
+Ephemeral queues, locks, distributed coordination, rate limits, worker
+heartbeats, temporary caches.
+
+Object Storage (S3/MinIO)
+
+Large artifacts:
+- prompts
+- outputs
+- checkpoints
+- execution snapshots
+- traces
+- logs
+
+ClickHouse (optional but recommended)
+
+Time-series analytics.
+
+Vector Database (Qdrant)
+
+Semantic cache.
+
+== 4. CORE ER MODEL ==
+
+Organization
+  ├── Users
+  ├── Projects
+  │   ├── Workflows
+  │   │   ├── WorkflowVersions
+  │   │   ├── WorkflowRuns
+  │   │   │   ├── TaskRuns
+  │   │   │   │   ├── LLM Requests
+  │   │   │   │   ├── Cache Entries
+  │   │   │   │   └── Execution Logs
+  │   │   │   ├── Events
+  │   │   │   ├── Checkpoints
+  │   │   │   └── Metrics
+  │   │   └── DAG Nodes & DAG Edges
+  ├── Workers
+  │   └── Heartbeats
+  ├── Models
+  │   └── Routing Policies
+
+== 5. MAIN TABLES ==
+
+organizations
+  id UUID PK
+  name
+  plan
+  created_at
+
+users
+  id UUID PK
+  organization_id FK
+  email
+  password_hash
+  role
+  created_at
+
+projects
+  id UUID PK
+  organization_id FK
+  name
+  description
+
+workflows
+  id UUID PK
+  project_id FK
+  name
+  current_version
+  status
+
+workflow_versions
+  id UUID PK
+  workflow_id FK
+  version
+  dag_json
+  hash
+  created_at
+
+workflow_runs
+  id UUID PK
+  workflow_version_id FK
+  status
+  priority
+  started_at
+  finished_at
+  latency_ms
+  estimated_cost
+  actual_cost
+  retry_count
+  failure_reason
+
+dag_nodes
+  id UUID PK
+  workflow_version_id FK
+  type
+  config_json
+  parallelizable
+  estimated_cost
+
+dag_edges
+  id UUID PK
+  from_node
+  to_node
+
+task_runs
+  id UUID PK
+  workflow_run_id FK
+  node_id
+  worker_id
+  status
+  attempt
+  started_at
+  completed_at
+  latency_ms
+  input_hash
+  output_hash
+
+workers
+  id UUID PK
+  hostname
+  cpu
+  memory
+  gpu
+  status
+  capabilities_json
+
+worker_heartbeats
+  worker_id
+  timestamp
+  cpu_usage
+  memory_usage
+  queue_depth
+
+models
+  id UUID PK
+  provider
+  model_name
+  context_window
+  cost_input
+  cost_output
+  latency_avg
+
+routing_policies
+  id UUID PK
+  strategy
+  constraints_json
+
+llm_requests
+  id UUID PK
+  task_run_id FK
+  model_id FK
+  prompt_hash
+  token_input
+  token_output
+  cache_hit
+  latency_ms
+
+cache_entries
+  id UUID PK
+  cache_key UNIQUE
+  prompt_hash
+  embedding_id
+  response_location
+  ttl
+  created_at
+
+checkpoints
+  id UUID PK
+  workflow_run_id FK
+  node_id
+  snapshot_location
+  checksum
+  created_at
+
+events
+  id BIGSERIAL PK
+  workflow_run_id
+  event_type
+  payload_json
+  timestamp
+
+execution_logs
+  id BIGSERIAL PK
+  task_run_id
+  level
+  message
+  timestamp
+
+metrics
+  id BIGSERIAL PK
+  workflow_run_id
+  metric_name
+  metric_value
+  recorded_at
+
+benchmarks
+  id UUID PK
+  name
+  dataset
+  result_json
+  created_at
+
+== 6. WORKFLOWS TABLE DETAILS ==
+
+Purpose
+
+Stores workflow definitions and metadata.
+
+Primary Key
+
+workflow_id
+
+Foreign Keys
+
+owner_id
+latest_execution_id
+
+Indexes
+
+workflow_id
+created_at
+status
+owner_id
+
+Constraints
+
+Workflow names unique per user.
+Status validation.
+DAG checksum required.
+
+Access Pattern
+
+Frequently read.
+Rarely updated.
+
+Partition Strategy
+
+No partitioning initially.
+
+== 7. INDEX STRATEGY ==
+
+Primary Keys
+
+UUID or BIGSERIAL.
+
+Composite Indexes
+
+(workflow_id, version)
+(workflow_run_id, status)
+(worker_id, timestamp DESC)
+(task_run_id, status)
+(model_id, latency_ms)
+(project_id, created_at DESC)
+
+Partial Indexes
+
+status='RUNNING'
+status='FAILED'
+
+GIN Indexes
+
+config_json
+constraints_json
+payload_json
+
+Trigram
+
+workflow name search
+
+Hash
+
+prompt_hash
+
+Vector
+
+embedding column (Qdrant)
+
+== 8. PARTITIONING STRATEGY ==
+
+workflow_runs
+
+Partition by month.
+
+events
+
+Daily partitions.
+
+metrics
+
+Weekly partitions.
+
+execution_logs
+
+Weekly partitions.
+
+Automatic archive after retention period.
+
+== 9. DATA LIFECYCLE & RETENTION ==
+
+Data Lifecycle Stages
+
+Workflow Created
+  ↓
+Stored
+  ↓
+Executed
+  ↓
+Checkpointed
+  ↓
+Completed
+  ↓
+Archived
+  ↓
+Deleted
+
+Describe each stage.
+
+Retention Policy
+
+Execution logs: 30 days
+Metrics: 180 days
+Events: 365 days
+Checkpoints: configurable
+Artifacts: lifecycle policy
+
+== 10. EVENT SOURCING ==
+
+Every state transition generates immutable events.
+
+Event Types:
+- WorkflowCreated
+- WorkflowStarted
+- TaskQueued
+- TaskStarted
+- TaskCompleted
+- TaskFailed
+- RetryScheduled
+- CheckpointSaved
+- CacheHit
+- CacheMiss
+- WorkflowCompleted
+
+Replay reconstructs state from events.
+
+== 11. CONSISTENCY & DURABILITY ==
+
+PostgreSQL ACID. Redis eventually consistent. Object storage immutable.
+Outbox pattern for async events.
+
+== 12. DATABASE MIGRATION STRATEGY ==
+
+Use Alembic.
+
+Naming Convention: 0001_initial 0002_scheduler 0003_cache 0004_checkpoint …
+
+Rules:
+- forward-only
+- additive first
+- no destructive migration without replacement
+- seed reference tables
+
+== 13. FUTURE DATABASE EXTENSIONS ==
+
+- Multi-region replication
+- Read replicas
+- CQRS read models
+- Lakehouse export
+- Graph execution metadata
+- Cost forecasting tables
+- ML-driven scheduler statistics
+
+================================================================================
+PART 2: API SPECIFICATION & SYSTEM CONTRACTS
+================================================================================
+
+== 1. API PURPOSE ==
+
+A distributed AI workflow execution platform that executes DAG-based AI
+workflows with adaptive scheduling, model routing, checkpointing, caching,
+replay, observability, benchmarking, and fault tolerance.
+
+== 2. API DESIGN PRINCIPLES ==
+
+- Resource-oriented
+- Idempotent operations where possible
+- Versioned endpoints
+- Predictable error responses
+- Pagination for collections
+- Structured validation errors
+- Consistent naming conventions
+- Backward compatibility
+
+== 3. CORE SERVICES ==
+
+1. API Gateway
+2. Auth Service
+3. Workflow Service
+4. Execution Planner
+5. Scheduler
+6. Worker Runtime
+7. Model Router
+8. Cache Service
+9. Checkpoint Service
+10. Replay Service
+11. Observability Service
+12. Benchmark Service
+13. Artifact Service
+14. Metadata Service
+
+== 4. SERVICE DEFINITIONS ==
+
+For every service, define:
+
+- RPCs
+- Messages (Request, Response, Status, Errors)
+
+SchedulerService
+
+RPCs:
+- ScheduleWorkflow
+- CancelWorkflow
+- PauseWorkflow
+- ResumeWorkflow
+
+WorkerService
+
+RPCs defined in gRPC Services section.
+
+PlannerService
+
+RPCs defined in gRPC Services section.
+
+RouterService
+
+RPCs defined in gRPC Services section.
+
+CheckpointService
+
+RPCs defined in gRPC Services section.
+
+ReplayService
+
+RPCs defined in gRPC Services section.
+
+MetricsService
+
+RPCs defined in gRPC Services section.
+
+== 5. API VERSIONING & DEPRECATION ==
+
+REST
+
+/api/v1/
+
+gRPC
+
+Package versions:
+- runtime.v1
+- runtime.v2
+
+Deprecation Strategy
+
+Support previous version with migration period before removal.
+
+== 6. STANDARD ERROR RESPONSES ==
+
+Every API should return structured error responses.
+
+Example:
+
+{
+  "error": {
+    "code": "WORKFLOW_NOT_FOUND",
+    "message": "...",
+    "trace_id": "...",
+    "timestamp": "..."
+  }
+}
+
+Define standard error codes and categories.
+
+== 7. REST API ENDPOINTS ==
+
+Workflow Management
+
+POST   /v1/workflows
+GET    /v1/workflows/{id}
+DELETE /v1/workflows/{id}
+
+Workflow Execution
+
+POST   /v1/workflows/{id}/execute
+POST   /v1/workflows/{id}/validate
+POST   /v1/workflows/{id}/dry-run
+
+Execution Management
+
+GET    /v1/executions/{id}
+POST   /v1/executions/{id}/cancel
+POST   /v1/executions/{id}/resume
+POST   /v1/executions/{id}/replay
+
+Models & Routing
+
+GET    /v1/models
+POST   /v1/models/route
+
+Cache & Metrics
+
+GET    /v1/cache/stats
+POST   /v1/cache/invalidate
+GET    /v1/metrics
+GET    /v1/traces
+GET    /v1/benchmarks
+
+== 8. CANONICAL JSON OBJECTS ==
+
+Workflow Object:
+
+{
+  "id":"uuid",
+  "name":"Research Pipeline",
+  "dag":{},
+  "constraints":{
+    "max_cost":2.0,
+    "max_latency_ms":30000
+  }
+}
+
+Execution Object:
+
+{
+  "execution_id":"uuid",
+  "status":"RUNNING",
+  "planner":"critical_path",
+  "scheduler":"adaptive",
+  "started_at":"ISO8601"
+}
+
+== 9. gRPC SERVICES ==
+
+service WorkflowService {
+  rpc CreateWorkflow(CreateWorkflowRequest)
+      returns (Workflow);
+  rpc ExecuteWorkflow(ExecuteWorkflowRequest)
+      returns (Execution);
+  rpc StreamExecution(ExecutionRequest)
+      returns (stream ExecutionEvent);
+}
+
+service SchedulerService {
+  rpc Schedule(TaskBatch)
+      returns (SchedulePlan);
+}
+
+service RouterService {
+  rpc SelectModel(RouteRequest)
+      returns (RouteResponse);
+}
+
+service WorkerService {
+  rpc ExecuteTask(Task)
+      returns (TaskResult);
+  rpc Heartbeat(HeartbeatRequest)
+      returns (HeartbeatResponse);
+}
+
+service CheckpointService {
+  rpc SaveCheckpoint(Checkpoint)
+      returns (Ack);
+  rpc RestoreCheckpoint(RestoreRequest)
+      returns (Checkpoint);
+}
+
+service ReplayService {
+  rpc ReplayExecution(ReplayRequest)
+      returns (stream ReplayEvent);
+}
+
+== 10. PROTOBUF DEFINITIONS ==
+
+syntax = "proto3";
+
+message Workflow {
+ string id=1;
+ string name=2;
+ bytes dag=3;
+ map<string,string> metadata=4;
+}
+
+message Task {
+ string id=1;
+ string node_id=2;
+ string model=3;
+ bytes input=4;
+}
+
+message TaskResult {
+ string task_id=1;
+ bool success=2;
+ bytes output=3;
+ double cost=4;
+ uint64 latency_ms=5;
+}
+
+message ExecutionEvent {
+ string execution_id=1;
+ string node_id=2;
+ string state=3;
+ uint64 timestamp=4;
+}
+
+== 11. SDK DESIGN ==
+
+Python SDK:
+
+runtime = Runtime(...)
+workflow = runtime.load("workflow.yaml")
+result = runtime.execute(workflow)
+
+TypeScript SDK:
+
+const runtime = new Runtime(config);
+const exec = await runtime.execute(workflow);
+
+SDK Modules:
+- workflows
+- execution
+- planner
+- scheduler
+- router
+- workers
+- cache
+- checkpoints
+- replay
+- metrics
+- tracing
+- benchmark
+- auth
+
+== 12. SCHEDULING POLICIES ==
+
+- FIFO
+- Priority
+- Critical-path
+- Cost-aware
+- Latency-aware
+- Resource-aware
+- Hybrid
+
+== 13. ROUTING POLICIES ==
+
+- Latency first
+- Cost first
+- Quality first
+- Hybrid weighted
+
+== 14. SYSTEM EVENTS ==
+
+- WorkflowCreated
+- ExecutionStarted
+- TaskQueued
+- TaskStarted
+- TaskFinished
+- TaskFailed
+- CheckpointSaved
+- ExecutionRecovered
+- ExecutionCompleted
+
+== 15. NON-FUNCTIONAL GOALS ==
+
+- 10k+ concurrent tasks
+- Horizontal worker scaling
+- Exactly-once workflow semantics where applicable
+- Deterministic replay
+- Crash recovery
+- Pluggable providers
+- Extensible scheduler/router interfaces
+
+================================================================================
+PART 3: OPERATIONS & OBSERVABILITY
+================================================================================
+
+== 1. OBSERVABILITY ==
+
+- OpenTelemetry traces
+- Prometheus metrics
+- Structured logs
+- Execution timeline
+- Cost dashboard
+- Latency histogram
+
+== 2. BACKUP & DISASTER RECOVERY ==
+
+Backup Strategy
+
+- Daily snapshots
+- Retention policy
+- Recovery testing
+
+Disaster Recovery
+
+- Recovery Time Objective (RTO)
+- Recovery Point Objective (RPO)
+- Failover procedures
+- Data consistency verification
+
+================================================================================
+PART 4: SECURITY ARCHITECTURE
+================================================================================
+
+== 1. SECURITY GOALS & PRINCIPLES ==
+
+Goals:
+- Protect workflow definitions, execution metadata, checkpoints, cached
+  outputs, secrets, and APIs.
+- Assume zero-trust between clients and services.
+- Security-by-default with least privilege.
+
+Security Principles:
+- Least privilege
+- Defense in depth
+- Zero trust
+- Fail securely
+- Secure defaults
+- Explicit authorization
+- Observability
+- Immutable audit trail
+- Privacy by design
+
+== 2. IDENTITY & AUTHENTICATION ==
+
+Human Users:
+- OAuth 2.0 / OpenID Connect (GitHub, Google, Microsoft) for web login.
+- JWT access tokens (short-lived) and refresh tokens.
+- Optional MFA support.
+- Session revocation.
+
+Service-to-Service:
+- Mutual TLS (mTLS).
+- Service identities.
+- Short-lived signed service tokens.
+
+API Authentication:
+- API keys for programmatic access.
+- Scoped keys.
+- Rotation and expiration.
+- Per-key quotas.
+
+== 3. AUTHORIZATION & ACCESS CONTROL ==
+
+Authorization Model:
+- RBAC + resource-level permissions.
+
+Roles:
+- Owner
+- Admin
+- Developer
+- Viewer
+- Service Account
+
+Resources:
+- Workflows
+- Executions
+- Models
+- Secrets
+- Checkpoints
+- Caches
+- Metrics
+- Replay sessions
+
+Actions:
+- Create
+- Read
+- Update
+- Delete
+- Execute
+- Cancel
+- Replay
+- Admin
+
+Future Authorization Enhancements:
+- ABAC (Attribute-Based Access Control)
+- Policy engine (e.g. OPA)
+
+== 4. SECRETS MANAGEMENT ==
+
+Core Principle:
+Never store plaintext secrets.
+
+Implementation:
+- Encrypt at rest using envelope encryption.
+- Master key from environment or external KMS.
+
+Secrets Include:
+- LLM API keys
+- Database credentials
+- OAuth secrets
+- Webhooks
+- TLS certificates
+- Signing keys
+
+Features:
+- Versioning
+- Rotation
+- Audit logs
+- Scoped access
+- Redacted logs
+
+== 5. ENCRYPTION ==
+
+In Transit:
+- TLS 1.3
+- mTLS internally where possible
+
+At Rest:
+- AES-256 for secrets
+- Encrypted database backups
+- Encrypted checkpoint storage
+
+== 6. RATE LIMITING ==
+
+Dimensions:
+- User
+- API key
+- IP
+- Organization
+- Workflow
+
+Algorithms:
+- Token Bucket (burst)
+- Sliding Window (fairness)
+
+Limits:
+- Login attempts
+- Workflow submissions
+- LLM requests
+- Replay requests
+- Admin endpoints
+
+Backpressure:
+- Queue limits
+- Concurrency caps
+- Graceful rejection (HTTP 429)
+
+== 7. THREAT MODEL & MITIGATIONS ==
+
+Assets:
+- User data
+- Workflow definitions
+- Execution history
+- API keys
+- Model credentials
+- Cached outputs
+
+Threat Actors:
+- External attacker
+- Malicious tenant
+- Compromised worker
+- Insider
+- Credential thief
+
+Major Threats and Mitigations:
+
+Spoofing:
+Risk/Impact/Mitigation:
+- OAuth/OIDC
+- mTLS
+- Signed JWTs
+
+Tampering:
+Risk/Impact/Mitigation:
+- Signed requests
+- Checksums
+- Immutable execution logs
+
+Repudiation:
+Risk/Impact/Mitigation:
+- Structured audit logs
+- Correlation IDs
+- Append-only audit trail
+
+Information Disclosure:
+Risk/Impact/Mitigation:
+- Encryption
+- RBAC
+- Secret redaction
+- Tenant isolation
+
+Denial of Service:
+Risk/Impact/Mitigation:
+- Rate limiting
+- Queues
+- Timeouts
+- Circuit breakers
+- Resource quotas
+
+Elevation of Privilege:
+Risk/Impact/Mitigation:
+- Least privilege
+- RBAC
+- Service identities
+- Permission validation
+
+Supply Chain Security:
+Risk/Impact/Mitigation:
+- Dependency scanning
+- SBOM generation
+- Image signing
+- Pinned versions
+
+Prompt Injection:
+Risk/Impact/Mitigation:
+- Treat model output as untrusted
+- Tool allow-lists
+- Input validation
+- Human approval for sensitive actions
+
+== 8. INPUT VALIDATION ==
+
+- JSON schema validation
+- Workflow validation
+- File validation
+- Prompt limits
+
+== 9. SECURE API DESIGN ==
+
+- Input validation
+- Output encoding
+- Idempotency keys
+- Pagination
+- CSRF protection for browser clients
+- CORS allow-list
+
+== 10. MULTI-TENANT ISOLATION ==
+
+- Tenant IDs on all resources
+- Row-level security
+- Per-tenant quotas
+- Cache namespace isolation
+- Secret isolation
+
+== 11. SECURE WORKER DESIGN ==
+
+Workers:
+- No hardcoded secrets
+- Sandboxed execution
+- Resource limits
+- Timeouts
+- Heartbeats
+- Signed task payloads
+
+== 12. LOGGING & AUDITING ==
+
+Log:
+- Auth events
+- Secret access
+- Workflow execution
+- Admin actions
+- Permission changes
+
+Never Log:
+- API keys
+- Prompts marked sensitive
+- Tokens
+- Passwords
+
+== 13. SECURITY TESTING ==
+
+- Unit tests
+- Integration tests
+- Fuzz testing
+- Dependency scanning
+- Static analysis
+- Container scanning
+- Load testing
+- Fault injection
+- Penetration testing checklist
+
+== 14. INCIDENT RESPONSE ==
+
+- Alerting
+- Key rotation
+- Session revocation
+- Audit review
+- Backup restore
+- Postmortem template
+
+== 15. OWASP TOP 10 MAPPING ==
+
+Map the runtime against common risks and mitigation strategies:
+
+Broken Authentication
+- Mitigation strategy explanation
+
+Injection
+- Mitigation strategy explanation
+
+Sensitive Data Exposure
+- Mitigation strategy explanation
+
+SSRF (Server-Side Request Forgery)
+- Mitigation strategy explanation
+
+Deserialization
+- Mitigation strategy explanation
+
+Logging Failures
+- Mitigation strategy explanation
+
+Dependency Vulnerabilities
+- Mitigation strategy explanation
+
+Explain your mitigation strategy for each.
+
+== 16. SUPPLY CHAIN SECURITY ==
+
+- Pinned dependencies
+- SBOM (Software Bill of Materials)
+- Container scanning
+- Dependency updates
+
+================================================================================
+END OF DOCUMENT
+================================================================================

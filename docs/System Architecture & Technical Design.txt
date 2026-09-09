@@ -1,0 +1,775 @@
+================================================================================
+CASCADE
+System Architecture & Technical Design
+Software Design Document (SDD)
+================================================================================
+
+
+================================================================================
+1. INTRODUCTION & PURPOSE
+================================================================================
+
+Document Purpose
+
+This document describes the complete architecture and technical design of Cascade.
+
+It defines the responsibilities, interactions, interfaces, data flow, internal algorithms, scalability characteristics, and failure handling mechanisms for every major subsystem.
+
+The goal is to provide sufficient technical detail for another engineer to understand, implement, extend, or maintain the platform without relying on undocumented assumptions.
+
+Vision
+
+Cascade is a production-grade distributed execution engine for AI workflows. It executes DAG-based workflows while optimizing latency, cost, throughput, and reliability through scheduling, routing, caching, checkpointing, batching, replay, and observability.
+
+The platform is infrastructure—not an application.
+
+Goals
+
+- Execute arbitrary DAG workflows
+- Distributed worker execution
+- Adaptive scheduling (heuristics and cost models)
+- Multi-provider model routing
+- Checkpointing and crash recovery
+- Intelligent caching
+- Speculative execution
+- Replay/debugging
+- Full observability
+- Benchmarking
+- Modular architecture
+- SDK and REST/gRPC APIs
+
+Non-Goals
+
+- Training foundation models.
+- Reinforcement-learning scheduler (initial architecture uses heuristics/cost models).
+- Multi-region deployment.
+- Kubernetes-first architecture.
+
+
+================================================================================
+2. SYSTEM OVERVIEW & ARCHITECTURE
+================================================================================
+
+High-Level Architecture
+
+Client -> API Gateway -> Planner -> Scheduler -> Queue/Event Bus -> Worker Runtime -> Model Router -> LLM Providers -> Checkpoint Manager -> Cache -> Metadata Store -> Observability -> Replay Engine -> Dashboard
+
+Alternative representation:
+
+Client/SDK -> API Gateway -> Workflow Planner -> Scheduler -> Task Queue -> Worker Runtime -> Model Router -> LLM Providers
+
+Supporting services:
+- Metadata DB
+- Checkpoint Store
+- Cache
+- Event Bus
+- Metrics
+- Tracing
+- Replay Engine
+- Dashboard
+
+Core Principles
+
+1. Modular services with clean interfaces.
+2. Measurable engineering decisions.
+3. Explainable runtime behavior.
+4. Vendor-neutral AI provider integration.
+5. Event-driven architecture.
+6. Production-grade reliability.
+
+Major Components & Subsystems
+
+1. API Gateway
+2. Authentication
+3. Workflow Compiler & Validator
+4. DAG Planner
+5. Scheduler
+6. Execution Engine
+7. Worker Pool
+8. Queue System
+9. Model Router
+10. Cache
+11. Checkpoint Manager
+12. State Store
+13. Replay Engine
+14. Benchmark Engine
+15. Observability
+16. Dashboard
+17. CLI
+18. SDKs
+
+
+================================================================================
+3. ARCHITECTURAL DECISIONS & PRINCIPLES
+================================================================================
+
+System Constraints
+
+The runtime is designed under the following architectural constraints:
+
+- Workflows must be Directed Acyclic Graphs (DAGs).
+- Workers are stateless.
+- PostgreSQL is the system of record.
+- Redis provides transient messaging only.
+- Every task must be idempotent.
+- External AI providers are treated as unreliable services.
+- Execution must tolerate partial failures.
+- Long-running workflows must survive process restarts.
+- Every execution decision should be observable.
+
+These assumptions influence every subsystem described below.
+
+Major Technology Decisions
+
+Language
+- Python: Primary language for orchestration, AI ecosystem, rapid iteration.
+- Rust (optional): Performance-critical scheduler/worker components if profiling justifies it.
+
+Communication
+- gRPC + Protocol Buffers: Chosen for efficient typed service communication, streaming, and language interoperability. Rejected REST for internal RPC due to serialization overhead.
+
+Workflow Representation
+- Directed Acyclic Graph (DAG): Enables dependency analysis, parallel execution, critical-path optimization, replay and scheduling.
+
+Scheduler
+- Adaptive heuristic scheduler instead of RL. Uses latency, estimated cost, queue depth, retries, dependency depth and resource availability. Reason: deterministic, explainable, easier to benchmark.
+
+Worker Queue
+- Redis Streams (initially): Simple, reliable, consumer groups, persistence, local development. Kafka can be evaluated later if throughput requires it.
+
+Database
+- PostgreSQL: Stores workflow definitions, execution metadata, checkpoints, audit logs, routing history. ACID guarantees and mature indexing.
+
+Cache
+- Redis: Fast in-memory cache for prompt hashes, execution results, workflow metadata.
+
+Checkpointing
+- Persistent checkpoints stored in PostgreSQL/object storage. Supports resume after failure and partial recomputation.
+
+Model Routing
+- Strategy pattern. Policies: Lowest latency, Lowest cost, Highest quality, Balanced, User-defined
+
+Observability
+- OpenTelemetry, Prometheus, Grafana. Reason: industry standard tracing, metrics, dashboards.
+
+Containers
+- Docker Compose for development.
+- Kubernetes only after architectural maturity.
+
+Engineering Trade-offs
+
+- Explainability over black-box optimization.
+- Reliability over peak benchmark numbers.
+- Incremental optimization over premature complexity.
+- Composition over monolithic architecture.
+
+Decision Matrix
+
+Decision             Chosen                Alternative      Why
+---------------------------------------------------------------------------
+Queue               Redis Streams         Kafka            Simpler deployment and sufficient guarantees for initial scale
+Internal RPC        gRPC                  REST             Lower overhead and strong typing
+Database            PostgreSQL            MongoDB          Strong consistency and relational workflow metadata
+Workflow Model      DAG                   General Graph    Easier validation and deterministic execution
+Scheduler           Heuristic             RL               Predictable, explainable, and achievable within project scope
+Worker Model        Stateless             Stateful         Easier recovery and horizontal scaling
+Cache               Prompt Hashing        Semantic Cache   Deterministic behavior and lower complexity
+
+
+================================================================================
+4. SUBSYSTEM SPECIFICATIONS
+================================================================================
+
+1. Workflow Planner
+
+Responsibilities:
+- Parse workflow definitions
+- Validate DAG
+- Detect cycles
+- Dependency resolution
+- Critical-path analysis
+- Topological sorting
+- Parallel stage identification
+
+Algorithms:
+- Kahn's Algorithm
+- DFS cycle detection
+- Critical Path Method
+
+2. Scheduler
+
+Responsibilities:
+- Critical-path analysis
+- Parallel execution
+- Concurrency limits
+- Cost-aware placement
+- Latency-aware placement
+- Retry policy
+- Backpressure
+- Priority queues
+- Failure recovery
+- Ready queue management
+- Priority scheduling
+- Resource-aware placement
+- Latency/cost policies
+- Dynamic concurrency limits
+
+Policies:
+- FIFO
+- Priority
+- Earliest-ready
+- Cost-first
+- Latency-first
+- Future: plugin scheduling policies
+
+3. Worker Runtime
+
+Responsibilities:
+- Execute nodes
+- Heartbeats
+- Lease renewal
+- Retry orchestration
+- Timeout handling
+- Idempotent execution
+- Streaming support
+
+4. Model Router
+
+Responsibilities:
+- Provider abstraction
+- Routing by latency/cost/quality
+- Automatic fallback
+- Circuit breaker
+- Rate-limit awareness
+- Token estimation
+
+Policies:
+- Cheapest
+- Lowest latency
+- Highest quality
+- Hybrid
+- Fallback chain
+- Budget constrained
+
+5. Execution Engine
+
+Responsibilities:
+- DAG execution
+- Parallel branches
+- Dependency tracking
+- Fan-in/fan-out
+- Speculative execution
+- Cancellation propagation
+
+6. Checkpoint Manager
+
+Responsibilities:
+- Persist workflow state
+- Incremental checkpoints
+- Resume after crash
+- Partial recomputation
+
+Storage:
+- PostgreSQL metadata
+- Blob/object storage for payloads
+
+7. Cache Layer
+
+Levels:
+- Prompt hash cache
+- Node output cache
+- Workflow cache
+- Optional semantic cache
+
+Policies:
+- TTL
+- LRU
+- Invalidation
+- Deduplication
+
+8. Replay Engine
+
+Responsibilities:
+- Deterministic replay
+- Timeline reconstruction
+- Decision inspection
+- Failure replay
+- Scheduler replay
+- Export execution traces
+
+9. Observability Stack
+
+Metrics:
+- Workflow latency
+- Node latency
+- Queue depth
+- Worker utilization
+- Cache hit rate
+- Cost
+- Token usage
+
+Tracing:
+- OpenTelemetry
+
+Dashboards:
+- Grafana
+
+Logging:
+- Structured JSON logs
+
+10. API Layer
+
+REST:
+- Submit workflow
+- Execution status
+- Replay
+- Metrics
+- Checkpoints
+
+gRPC:
+- Worker communication
+- Scheduler
+- Router
+
+11. Dashboard
+
+Views:
+- Live DAG
+- Worker health
+- Scheduler queue
+- Costs
+- Latency
+- Replay timeline
+- Traces
+
+
+================================================================================
+5. DATA MODEL & STORAGE
+================================================================================
+
+Data Model
+
+Main entities:
+- Workflow
+- Node
+- Execution
+- Checkpoint
+- Worker
+- ModelProvider
+- CacheEntry
+- Trace
+- Metric
+- ReplayEvent
+
+Data Storage Strategy
+
+PostgreSQL:
+- Users
+- Workflows
+- Executions
+- Tasks
+- Checkpoints
+- Events
+- Metrics
+- Routing history
+
+Redis:
+- Queues
+- Distributed locks
+- Cache
+- Ephemeral state
+
+Object Storage:
+- Artifacts
+- Replay snapshots
+
+
+================================================================================
+6. SYSTEM BEHAVIOR & STATE MACHINES
+================================================================================
+
+Workflow State Machine
+
+Created
+↓
+Validated
+↓
+Queued
+↓
+Running
+↓
+Checkpointed
+↓
+Completed
+
+Failure branch:
+
+Running
+↓
+Failed
+↓
+Retrying
+↓
+Recovered
+↓
+Completed
+or
+Failed
+↓
+Cancelled
+
+Task Lifecycle
+
+Pending
+↓
+Scheduled
+↓
+Running
+↓
+Succeeded
+
+Failure:
+
+↓
+Retry
+↓
+Failed
+
+Worker Lifecycle
+
+Idle
+↓
+Assigned
+↓
+Executing
+↓
+Heartbeat
+↓
+Completed
+
+Failure:
+
+↓
+Recovered
+
+
+Workflow Submission Flow
+
+Developer
+↓
+Gateway
+↓
+Planner
+↓
+Scheduler
+↓
+Queue
+↓
+Worker
+↓
+Router
+↓
+LLM
+↓
+Worker
+↓
+Checkpoint
+↓
+Dashboard
+
+Failure Recovery Paths
+
+- Replay
+- Cache hit
+- Checkpoint restore
+- Model routing
+- Parallel execution
+
+These become fantastic interview material.
+
+
+================================================================================
+7. COMMUNICATION & PROTOCOLS
+================================================================================
+
+Communication Strategy
+
+REST
+- Client communication.
+
+gRPC
+- Internal services.
+
+Redis Streams
+- Async messaging.
+
+PostgreSQL
+- Persistent state.
+
+OpenTelemetry
+- Tracing.
+
+Prometheus
+- Metrics.
+
+Distributed Systems Concepts
+
+- Heartbeats
+- Idempotency
+- Exactly-once approximation
+- Retries with backoff
+- Dead-letter queues
+- Leader election (future)
+- Backpressure
+- Work stealing
+- Event sourcing
+- Horizontal scaling
+
+Algorithms
+
+Scheduling
+- Topological sort
+- Critical path analysis
+- Priority queue scheduling
+- Dynamic concurrency control
+
+Parallelism
+- Dependency-aware execution
+- Work stealing (future)
+- Backpressure
+
+Caching
+- Prompt hashing
+- LRU
+- TTL
+- Optional semantic cache
+
+Failure Recovery
+- Exponential backoff
+- Circuit breaker
+- Idempotent retries
+- Dead-letter queue
+
+Replay
+- Event sourcing
+- Deterministic event replay
+
+
+================================================================================
+8. QUALITY ATTRIBUTES & RESILIENCE
+================================================================================
+
+Security
+
+- JWT/OAuth
+- RBAC
+- Secrets management
+- Rate limiting
+- Audit logs
+
+Fault Tolerance
+
+- Retries
+- Exponential backoff
+- Dead-letter queue
+- Heartbeats
+- Worker leases
+- Circuit breakers
+
+Failure Scenarios & Recovery
+
+Worker crash
+- Detection
+- Recovery
+- Retry
+
+Redis unavailable
+- Fallback
+
+Database unavailable
+- Graceful degradation
+
+LLM timeout
+- Retry
+- Circuit breaker
+
+Invalid workflow
+- Planner rejection
+
+Checkpoint corruption
+- Rollback
+
+Duplicate execution
+- Idempotency
+
+Lost heartbeat
+- Worker reassignment
+
+
+================================================================================
+9. OBSERVABILITY & BENCHMARKING
+================================================================================
+
+Observability
+
+OpenTelemetry tracing. Prometheus metrics. Grafana dashboards. Structured logs.
+
+Benchmarking
+
+Measure:
+- Throughput
+- Latency
+- Recovery time
+- Cache efficiency
+- Scheduler overhead
+- Routing overhead
+- Cost reduction
+
+Additional Metrics to Measure:
+- Workflow latency
+- Queue wait time
+- Scheduler efficiency
+- Worker utilization
+- Failure recovery rate
+- Checkpoint overhead
+- Batch efficiency
+- Cost per workflow
+
+Replay
+
+Replay any execution deterministically from recorded events.
+
+Testing
+
+- Unit
+- Integration
+- Load
+- Chaos
+- Failure injection
+- End-to-end
+- Benchmark regression
+
+
+================================================================================
+10. TECHNICAL IMPLEMENTATION
+================================================================================
+
+Recommended Tech Stack
+
+Backend:
+- Python
+- FastAPI
+
+Performance modules:
+- Rust (optional)
+
+Messaging:
+- Redis Streams or NATS
+
+Database:
+- PostgreSQL
+
+Observability:
+- OpenTelemetry
+- Prometheus
+- Grafana
+
+Containers:
+- Docker Compose
+
+CI:
+- GitHub Actions
+
+Frontend:
+- Next.js
+- React
+- TypeScript
+
+Alternative representation:
+
+Python, FastAPI, gRPC, PostgreSQL, Redis Streams, Docker, OpenTelemetry, Prometheus, Grafana, React, Next.js, TypeScript.
+
+Repository Structure (Target)
+
+docs/ adr/ planner/ scheduler/ router/ workers/ runtime/ checkpoint/ cache/ observability/ benchmark/ dashboard/ sdk/ cli/ tests/
+
+Deployment
+
+- Docker Compose (dev)
+- Containerized services
+- CI/CD
+- Self-hosted production
+
+
+================================================================================
+11. SUCCESS CRITERIA & FUTURE VISION
+================================================================================
+
+Success Criteria
+
+- Reliable execution
+- Measurable optimization
+- Production-quality documentation
+- Benchmarks
+- Modular architecture
+- Extensibility
+
+Success Metrics
+
+- Latency
+- Throughput
+- Cost/workflow
+- Failure recovery time
+- Cache hit rate
+- Scheduler utilization
+- Worker utilization
+- Replay correctness
+- Checkpoint overhead
+- Scalability
+
+Deliverables
+
+- Modular runtime
+- SDK
+- CLI
+- Dashboard
+- Documentation
+- Benchmarks
+- ADRs
+- Architecture diagrams
+- API docs
+- Performance report
+- Failure injection report
+- Replay demos
+
+Future Research
+
+- Speculative execution
+- Semantic caching
+- Distributed scheduling
+- GPU-aware placement
+- Adaptive batching
+- Cost prediction
+- Hybrid routing
+- Distributed consensus
+
+Future Extensions
+
+- Kubernetes integration
+- Multi-region execution
+- Pluggable schedulers
+- Pluggable storage engines
+- Additional model providers
+- WASM sandboxed workers
+- GPU-aware scheduling
+- Semantic cache
+- Learned optimization policies
+- Heterogeneous hardware scheduling
+
+Final Vision
+
+Build an open-source AI infrastructure platform whose engineering quality is demonstrated through architecture, benchmarks, observability, documentation, testing, and reproducible performance rather than novelty alone.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
