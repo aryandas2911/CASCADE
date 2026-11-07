@@ -15,8 +15,10 @@ Early foundation. The package can be imported (``import cascade``) and started
 Cascade runtime initialized
 ```
 
-Workflow execution, distributed services, APIs, persistence, and the other
-runtime subsystems described in `docs/` and `adr/` are not implemented yet.
+Typed workflow schemas are available for loading and structural validation.
+Cycle detection, workflow execution, distributed services, APIs, persistence,
+and the other runtime subsystems described in `docs/` and `adr/` are not
+implemented yet.
 
 ## Requirements
 
@@ -36,7 +38,11 @@ CASCADE/
 │   └── workflow/
 │       ├── __init__.py
 │       ├── models.py
-│       └── schema.py
+│       ├── schema.py
+│       └── schemas.py
+├── examples/workflows/
+│   ├── branching.json
+│   └── linear.json
 ├── tests/unit/
 ├── adr/
 ├── docs/
@@ -89,6 +95,34 @@ Cascade runtime initialized
 ```
 
 The process exits with status code 0.
+
+## Workflow Schemas
+
+Pydantic models in `cascade.workflow` describe workflow definitions:
+
+- `Workflow`: `id` (UUID), `name` (nonempty string), `dag`, optional `constraints`.
+- `DAG`: `nodes` and directed `edges`.
+- `Node`: `id` (UUID), `type` (nonempty string), `config` object,
+  `parallelizable` flag, nonnegative `estimated_cost`.
+- `Edge`: `from_node` and `to_node` node UUIDs.
+- `WorkflowConstraints`: optional nonnegative `max_cost` and positive
+  `max_latency_ms`.
+
+Load an example:
+
+```python
+from pathlib import Path
+
+from cascade.workflow import Workflow
+
+workflow = Workflow.model_validate_json(
+    Path("examples/workflows/branching.json").read_text(encoding="utf-8")
+)
+```
+
+The schema layer validates node ID uniqueness, edge endpoints, self-referencing
+edges, and duplicate edges. It does not detect cycles or validate execution
+semantics; cycle detection belongs to the DAG validation milestone.
 
 ## Tests
 

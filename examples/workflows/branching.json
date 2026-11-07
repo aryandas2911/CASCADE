@@ -1,0 +1,49 @@
+{
+  "id": "10000000-0000-4000-8000-000000000002",
+  "name": "Branching Workflow",
+  "dag": {
+    "nodes": [
+      {
+        "id": "30000000-0000-4000-8000-000000000001",
+        "type": "task",
+        "config": {
+          "label": "prepare shared input"
+        },
+        "parallelizable": false,
+        "estimated_cost": 0.2
+      },
+      {
+        "id": "30000000-0000-4000-8000-000000000002",
+        "type": "task",
+        "config": {
+          "label": "left branch"
+        },
+        "parallelizable": true,
+        "estimated_cost": 0.4
+      },
+      {
+        "id": "30000000-0000-4000-8000-000000000003",
+        "type": "task",
+        "config": {
+          "label": "right branch"
+        },
+        "parallelizable": true,
+        "estimated_cost": 0.4
+      }
+    ],
+    "edges": [
+      {
+        "from_node": "30000000-0000-4000-8000-000000000001",
+        "to_node": "30000000-0000-4000-8000-000000000002"
+      },
+      {
+        "from_node": "30000000-0000-4000-8000-000000000001",
+        "to_node": "30000000-0000-4000-8000-000000000003"
+      }
+    ]
+  },
+  "constraints": {
+    "max_cost": 3.0,
+    "max_latency_ms": 180000
+  }
+}

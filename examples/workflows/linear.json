@@ -1,0 +1,49 @@
+{
+  "id": "10000000-0000-4000-8000-000000000001",
+  "name": "Linear Workflow",
+  "dag": {
+    "nodes": [
+      {
+        "id": "20000000-0000-4000-8000-000000000001",
+        "type": "task",
+        "config": {
+          "label": "prepare input"
+        },
+        "parallelizable": false,
+        "estimated_cost": 0.1
+      },
+      {
+        "id": "20000000-0000-4000-8000-000000000002",
+        "type": "task",
+        "config": {
+          "label": "process input"
+        },
+        "parallelizable": false,
+        "estimated_cost": 0.5
+      },
+      {
+        "id": "20000000-0000-4000-8000-000000000003",
+        "type": "task",
+        "config": {
+          "label": "produce output"
+        },
+        "parallelizable": false,
+        "estimated_cost": 0.1
+      }
+    ],
+    "edges": [
+      {
+        "from_node": "20000000-0000-4000-8000-000000000001",
+        "to_node": "20000000-0000-4000-8000-000000000002"
+      },
+      {
+        "from_node": "20000000-0000-4000-8000-000000000002",
+        "to_node": "20000000-0000-4000-8000-000000000003"
+      }
+    ]
+  },
+  "constraints": {
+    "max_cost": 2.5,
+    "max_latency_ms": 120000
+  }
+}
