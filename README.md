@@ -1,26 +1,133 @@
 # Cascade
 
-Cascade is a distributed AI workflow execution engine designed to execute DAG-based AI workflows while optimizing latency, cost, throughput, reliability, and observability.
+Cascade is a distributed AI workflow execution engine designed to execute DAG-based
+AI workflows while optimizing latency, cost, throughput, reliability, and
+observability.
 
 Cascade is infrastructure rather than an end-user AI application.
 
 ## Current Status
 
-Early development.
+Early foundation. The package can be imported (``import cascade``) and started
+(``python -m cascade``), which prints:
 
-The project is being implemented incrementally, beginning with the workflow and local execution foundations before introducing distributed execution, reliability mechanisms, optimization, observability, replay, and production deployment.
+```text
+Cascade runtime initialized
+```
 
-## Core Architecture
+Workflow execution, distributed services, APIs, persistence, and the other
+runtime subsystems described in `docs/` and `adr/` are not implemented yet.
 
-Client
-→ API Gateway
-→ Planner
-→ Scheduler
-→ Queue
-→ Workers
-→ Model Router
+## Requirements
 
-Supporting systems include persistent state, checkpointing, caching, observability, replay, benchmarking, SDKs, CLI, and dashboard components.
+- Python 3.11 or newer
+- Git
+- A terminal (PowerShell, Bash, or equivalent)
+
+## Project Layout
+
+```text
+CASCADE/
+├── src/cascade/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── runtime/
+│   │   └── __init__.py
+│   └── workflow/
+│       ├── __init__.py
+│       ├── models.py
+│       └── schema.py
+├── tests/unit/
+├── adr/
+├── docs/
+├── pyproject.toml
+└── README.md
+```
+
+The package uses a `src/` layout so imports come from the installed package
+rather than from the repository root.
+
+## Setup
+
+Create and activate a virtual environment from the repository root.
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+macOS or Linux:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+Upgrade pip and install Cascade in editable mode with its development tools:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+The `dev` extra installs pytest, Ruff, Black, and mypy.
+
+## Running
+
+Start the package from the repository root:
+
+```bash
+python -m cascade
+```
+
+Expected output:
+
+```text
+Cascade runtime initialized
+```
+
+The process exits with status code 0.
+
+## Tests
+
+Run the unit test suite:
+
+```bash
+python -m pytest
+```
+
+Run a single test file:
+
+```bash
+python -m pytest tests/unit/test_entrypoint.py
+```
+
+Tests are configured with `testpaths = ["tests"]` in `pyproject.toml`.
+
+## Linting
+
+Check formatting and lint rules with Ruff:
+
+```bash
+python -m ruff check .
+```
+
+Apply safe automatic fixes:
+
+```bash
+python -m ruff check --fix .
+```
+
+## Development Tooling
+
+The `pyproject.toml` file configures:
+
+- setuptools packaging with a `src/` layout
+- pytest test discovery
+- Ruff linting
+- Black and mypy development dependencies
 
 ## Engineering Principles
 
@@ -32,15 +139,6 @@ Supporting systems include persistent state, checkpointing, caching, observabili
 - Progressive testing
 - Production-oriented engineering
 
-## Development
+## License
 
-The project uses Python for the core runtime and follows a `src/` package layout.
-
-Development tooling includes:
-
-- pytest
-- Ruff
-- Black
-- mypy
-
-More detailed architecture and development documentation will be added as the corresponding subsystems are implemented.
+See `LICENSE`.
