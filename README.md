@@ -16,9 +16,10 @@ Cascade runtime initialized
 ```
 
 Typed workflow schemas are available for loading and structural validation.
-Cycle detection, workflow execution, distributed services, APIs, persistence,
-and the other runtime subsystems described in `docs/` and `adr/` are not
-implemented yet.
+Graph-level DAG validation, cycle detection, and deterministic topological
+sorting are also available. Scheduling, workflow execution, distributed
+services, APIs, persistence, and the other runtime subsystems described in
+`docs/` and `adr/` are not implemented yet.
 
 ## Requirements
 
@@ -37,8 +38,7 @@ CASCADE/
 │   │   └── __init__.py
 │   └── workflow/
 │       ├── __init__.py
-│       ├── models.py
-│       ├── schema.py
+│       ├── graph.py
 │       └── schemas.py
 ├── examples/workflows/
 │   ├── branching.json
@@ -121,8 +121,53 @@ workflow = Workflow.model_validate_json(
 ```
 
 The schema layer validates node ID uniqueness, edge endpoints, self-referencing
-edges, and duplicate edges. It does not detect cycles or validate execution
-semantics; cycle detection belongs to the DAG validation milestone.
+edges, and duplicate edges. It deliberately accepts cyclic graphs so that
+graph-level validation can report cycles explicitly.
+
+## DAG Validation and Topological Sorting
+
+Graph utilities in `cascade.workflow.graph` operate on an existing `DAG` without
+mutating it:
+
+```python
+from pathlib import Path
+
+from cascade.workflow import (
+    DAGCycleError,
+    Workflow,
+    sink_nodes,
+    source_nodes,
+    topological_sort,
+    validate_dag,
+)
+
+workflow = Workflow.model_validate_json(
+    Path("examples/workflows/branching.json").read_text(encoding="utf-8")
+)
+
+try:
+    validate_dag(workflow.dag)
+except DAGCycleError as error:
+    print(error.unresolved_node_ids)
+else:
+    order = topological_sort(workflow.dag)
+    sources = source_nodes(workflow.dag)
+    sinks = sink_nodes(workflow.dag)
+```
+
+`topological_sort` uses Kahn's algorithm and a min-heap keyed by `UUID.int`.
+Ready nodes are therefore emitted in a reproducible order regardless of node or
+edge insertion order. The cost is `O(V + E)` traversal plus `O(V log V)` heap
+work.
+
+A cycle raises `DAGCycleError`, a `DAGValidationError`. Its
+`unresolved_node_ids` contains every node that could not be ordered. That set
+includes nodes downstream of a cycle, so it is not necessarily exactly the
+cycle members.
+
+Empty DAGs return empty lists from `topological_sort`, `source_nodes`, and
+`sink_nodes`. These utilities perform only dependency analysis; they do not
+schedule or execute work.
 
 ## Tests
 
