@@ -17,9 +17,10 @@ Cascade runtime initialized
 
 Typed workflow schemas are available for loading and structural validation.
 Graph-level DAG validation, cycle detection, and deterministic topological
-sorting are also available. Scheduling, workflow execution, distributed
-services, APIs, persistence, and the other runtime subsystems described in
-`docs/` and `adr/` are not implemented yet.
+sorting are also available, along with read-only dependency analysis: execution
+layers, node depths, and a cost-weighted critical path. Scheduling, workflow
+execution, distributed services, APIs, persistence, and the other runtime
+subsystems described in `docs/` and `adr/` are not implemented yet.
 
 ## Requirements
 
@@ -34,6 +35,9 @@ CASCADE/
 ├── src/cascade/
 │   ├── __init__.py
 │   ├── __main__.py
+│   ├── planner/
+│   │   ├── __init__.py
+│   │   └── analysis.py
 │   ├── runtime/
 │   │   └── __init__.py
 │   └── workflow/
@@ -168,6 +172,63 @@ cycle members.
 Empty DAGs return empty lists from `topological_sort`, `source_nodes`, and
 `sink_nodes`. These utilities perform only dependency analysis; they do not
 schedule or execute work.
+
+## DAG Analysis and Execution Layers
+
+`cascade.planner` provides read-only analysis on top of an existing `DAG`:
+
+```python
+from pathlib import Path
+
+from cascade.planner import analyze_dag
+from cascade.workflow import Workflow
+
+workflow = Workflow.model_validate_json(
+    Path("examples/workflows/branching.json").read_text(encoding="utf-8")
+)
+
+analysis = analyze_dag(workflow.dag)
+
+for depth, layer in enumerate(analysis.execution_layers):
+    print(depth, [str(node_id) for node_id in layer])
+
+print(analysis.node_depths)
+print(analysis.critical_path_nodes)
+print(analysis.critical_path_estimated_cost)
+```
+
+For the branching example, layer 0 contains the shared upstream node and layer 1
+contains its two downstream nodes. Nodes within each layer are sorted by
+`UUID.int`, and every edge `(u, v)` satisfies `depth[u] < depth[v]`.
+
+- `execution_layers(dag)` groups nodes by dependency depth. Layers express
+  eligibility only; they do not guarantee simultaneous execution or define a
+  scheduling policy. `Node.parallelizable` remains metadata and is not
+  interpreted here.
+- `node_depths(dag)` assigns depth 0 to sources and
+  `1 + max(predecessor depths)` to every other node, including joins and
+  disconnected components.
+- `critical_cost_path(dag)` returns a `CriticalCostPath` with
+  `estimated_cost` summed along the maximum-cost path.
+
+**Important:** `estimated_cost` represents estimated monetary or resource cost,
+not duration. The result is therefore a **cost-weighted critical path, not an
+execution-time critical path or latency prediction**. `max_latency_ms` is never
+used as a node weight; latency analysis needs separately defined duration
+estimates.
+
+Equal-cost alternatives are resolved by the lexicographically smallest complete
+sequence of `UUID.int` values, so results do not depend on node or edge
+insertion order. Zero-cost nodes are still included in paths.
+
+`analyze_dag(dag)` returns an immutable `DAGAnalysis` containing
+`execution_layers`, `node_depths`, `critical_path_nodes`, and
+`critical_path_estimated_cost`. All analysis functions propagate `DAGCycleError`
+instead of returning partial results. An empty DAG produces empty layers,
+depths, and path, with cost `0.0`.
+
+The analysis runs in `O(V + E)` graph traversal plus deterministic ordering
+overhead (`O(V log V)` in the worst case).
 
 ## Tests
 
