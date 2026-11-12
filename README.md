@@ -18,9 +18,12 @@ Cascade runtime initialized
 Typed workflow schemas are available for loading and structural validation.
 Graph-level DAG validation, cycle detection, and deterministic topological
 sorting are also available, along with read-only dependency analysis: execution
-layers, node depths, and a cost-weighted critical path. Scheduling, workflow
-execution, distributed services, APIs, persistence, and the other runtime
-subsystems described in `docs/` and `adr/` are not implemented yet.
+layers, node depths, and a cost-weighted critical path.
+
+A synchronous local executor can run validated DAGs with registered Python
+handlers. Distributed execution, asynchronous scheduling, retries, timeouts,
+APIs, persistence, and the other runtime subsystems described in `docs/` and
+`adr/` are not implemented yet.
 
 ## Requirements
 
@@ -39,14 +42,19 @@ CASCADE/
 │   │   ├── __init__.py
 │   │   └── analysis.py
 │   ├── runtime/
-│   │   └── __init__.py
+│   │   ├── __init__.py
+│   │   ├── executor.py
+│   │   ├── models.py
+│   │   └── registry.py
 │   └── workflow/
 │       ├── __init__.py
 │       ├── graph.py
 │       └── schemas.py
-├── examples/workflows/
-│   ├── branching.json
-│   └── linear.json
+├── examples/
+│   ├── run_local_executor.py
+│   └── workflows/
+│       ├── branching.json
+│       └── linear.json
 ├── tests/unit/
 ├── adr/
 ├── docs/
@@ -229,6 +237,66 @@ depths, and path, with cost `0.0`.
 
 The analysis runs in `O(V + E)` graph traversal plus deterministic ordering
 overhead (`O(V log V)` in the worst case).
+
+## Local Sequential Executor
+
+`cascade.runtime.LocalExecutor` runs a validated workflow synchronously with
+handlers registered in an injected `TaskRegistry`:
+
+```python
+from typing import Any
+from uuid import UUID
+
+from cascade.runtime import LocalExecutor, TaskRegistry
+from cascade.workflow import Workflow
+
+registry = TaskRegistry()
+
+
+def constant(config: dict[str, Any], inputs: dict[UUID, Any]) -> Any:
+    return config["value"]
+
+
+def multiply(config: dict[str, Any], inputs: dict[UUID, Any]) -> Any:
+    (value,) = inputs.values()
+    return value * config["factor"]
+
+
+registry.register("constant", constant)
+registry.register("multiply", multiply)
+
+result = LocalExecutor(registry).execute(workflow)
+```
+
+Each handler receives its node's `config` and a dictionary of **direct
+predecessor outputs** keyed by predecessor `UUID`. Outputs are arbitrary Python
+objects held in memory; they are not serialized.
+
+Execution behavior:
+
+- The entire DAG is validated before any handler runs. A cycle raises
+  `DAGCycleError`.
+- Nodes run sequentially in deterministic topological order.
+- A successful workflow returns `WorkflowStatus.COMPLETED`.
+- An unknown handler or handler exception marks that node `FAILED`, marks the
+  workflow `FAILED`, preserves earlier outputs, leaves unstarted nodes
+  `PENDING`, and stops immediately. Error details remain on the node result.
+- Each execution creates fresh result objects; repeated runs do not reuse
+  previous state.
+- Empty DAGs complete successfully with no node results.
+
+`TaskRegistry` rejects duplicate node types and reports unknown types
+explicitly. It is a per-executor object, not a global singleton.
+
+Run the three-node constant → multiply → combine demo:
+
+```bash
+python examples/run_local_executor.py
+```
+
+This executor is intentionally local and synchronous. It has no asyncio,
+threads, retries, timeouts, cancellation, checkpointing, or distributed
+workers.
 
 ## Tests
 
